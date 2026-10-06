@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: brv-sglypa-moderator
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: OWNER_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: BOT_NICKNAMES
+        value: сглыпа,sglypa,сглып
+      - key: PAVLOVA_NAMES
+        value: павлова,pavlova,@pav.p3
+      - key: WEBHOOK_BASE_URL
+        sync: false
