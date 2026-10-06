@@ -1,0 +1,22 @@
+FIX: Render redeploy webhook race
+
+Проблема:
+старый инстанс Render при выключении удалял Telegram webhook.
+При rolling deploy могло происходить так:
+1. новый инстанс ставит webhook;
+2. старый инстанс выключается;
+3. старый инстанс удаляет webhook;
+4. сервис зелёный, но бот не получает сообщения.
+
+Исправлено:
+- webhook больше НЕ удаляется при shutdown;
+- при startup бот заново устанавливает webhook;
+- в Render Logs печатается фактический webhook URL и pending updates.
+
+Что сделать:
+1. Залить эти файлы в GitHub вместо текущих.
+2. Render -> Manual Deploy -> Deploy latest commit.
+3. В Logs дождаться:
+   Bot @... ready
+   Webhook: https://...onrender.com/telegram/webhook
+4. В группе отправить /activate

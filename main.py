@@ -524,15 +524,20 @@ async def on_startup(app: web.Application):
         allowed_updates=dp.resolve_used_update_types(),
     )
 
+    webhook_info = await bot.get_webhook_info()
     print(f"Bot @{me.username} ready")
-    print(f"Webhook: {webhook_url}")
+    print(f"Webhook: {webhook_info.url}")
+    print(f"Pending updates: {webhook_info.pending_update_count}")
+    if webhook_info.last_error_message:
+        print(f"Telegram webhook last error: {webhook_info.last_error_message}")
 
 
 async def on_shutdown(app: web.Application):
-    try:
-        await bot.delete_webhook(drop_pending_updates=False)
-    except Exception:
-        pass
+    # IMPORTANT:
+    # Do NOT delete the Telegram webhook here.
+    # Render may start the new instance before stopping the old one.
+    # If the old instance deletes the webhook during shutdown,
+    # the freshly deployed instance stops receiving Telegram updates.
     await db.close()
 
 
