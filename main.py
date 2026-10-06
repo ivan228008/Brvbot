@@ -1,6 +1,7 @@
 import os
 import html
 import hashlib
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 from aiohttp import web
@@ -32,6 +33,9 @@ PAVLOVA_NAMES = {
     for x in os.getenv("PAVLOVA_NAMES", "павлова,pavlova,@pav.p3").split(",")
     if x.strip()
 }
+
+IRIS_BOT_USERNAME = os.getenv("IRIS_BOT_USERNAME", "iris_cm_bot").strip().lstrip("@")
+IRIS_COMMAND_DELETE_SECONDS = int(os.getenv("IRIS_COMMAND_DELETE_SECONDS", "6") or 6)
 
 WEBHOOK_PATH = "/telegram/webhook"
 BASE_URL = (
@@ -72,13 +76,60 @@ async def is_admin(bot: Bot, chat_id: int, user_id: int):
         return False
 
 
-async def mute(bot: Bot, chat_id: int, user_id: int, minutes: int):
-    await bot.restrict_chat_member(
-        chat_id,
-        user_id,
-        permissions=ChatPermissions(can_send_messages=False),
-        until_date=datetime.now(timezone.utc) + timedelta(minutes=minutes),
+def iris_duration(minutes: int) -> str:
+    if minutes <= 0:
+        return ""
+    if minutes % 1440 == 0:
+        return f"{minutes // 1440}д"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}ч"
+    return f"{minutes}м"
+
+
+async def delete_later(*messages, delay: int | None = None):
+    await asyncio.sleep(delay if delay is not None else IRIS_COMMAND_DELETE_SECONDS)
+    for msg in messages:
+        if not msg:
+            continue
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
+
+def iris_command(action: str, minutes: int, reason: str) -> str:
+    target = IRIS_BOT_USERNAME
+
+    if action == "warn":
+        cmd = f"/warn@{target}"
+    elif action == "mute":
+        cmd = f"/mute@{target} {iris_duration(minutes)}"
+    elif action == "kick":
+        cmd = f"/kick@{target}"
+    elif action == "ban":
+        cmd = f"/ban@{target}"
+    else:
+        raise ValueError(f"Unknown Iris action: {action}")
+
+    # Iris supports reason on the next line.
+    return f"{cmd}\n{reason}"
+
+
+async def send_to_iris(message: Message, action: str, minutes: int, reason: str):
+    """
+    Send moderation command as a reply to the violating user's message.
+    The command is explicitly addressed to Iris so Telegram bot-to-bot mode
+    can deliver it to Iris.
+    """
+    text = iris_command(action, minutes, reason)
+    iris_msg = await message.reply(text)
+
+    # Give Iris time to receive/process the command, then clean our command
+    # and the offending message. Iris's own moderation response stays visible.
+    asyncio.create_task(
+        delete_later(iris_msg, message, delay=IRIS_COMMAND_DELETE_SECONDS)
     )
+    return iris_msg
 
 
 def ladder(rule: str, previous: int, severity: int):
@@ -139,36 +190,24 @@ async def punish(message: Message, detection):
         detection.rule_code, previous, detection.severity
     )
 
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    reason = (
+        f"BRV SmartMod: {RULE_NAMES.get(detection.rule_code, detection.rule_code)}. "
+        f"{detection.reason}. Нарушение #{previous + 1}."
+    )
 
+    # IMPORTANT: no direct mute/ban here. Iris performs the punishment.
     try:
-        if action == "mute":
-            await mute(message.bot, message.chat.id, user.id, minutes)
-        elif action == "kick":
-            await message.bot.ban_chat_member(message.chat.id, user.id)
-            await message.bot.unban_chat_member(message.chat.id, user.id)
-        elif action == "ban":
-            await message.bot.ban_chat_member(message.chat.id, user.id)
-    except TelegramBadRequest:
+        await send_to_iris(message, action, minutes, reason)
+    except Exception as exc:
+        print(f"IRIS SEND ERROR: {type(exc).__name__}: {exc}")
+        # Keep database record but do not silently punish directly.
         await message.answer(
-            "⚠️ Нарушение найдено, но мне не хватает админ-прав для наказания."
+            "⚠️ Нарушение найдено, но команда не ушла в Iris. "
+            "Проверь IRIS_BOT_USERNAME, Bot-to-Bot и ранг моего бота в Iris."
         )
 
     await db.add_punishment(
-        message.chat.id, user.id, action, minutes, detection.rule_code
-    )
-
-    await message.answer(
-        f"⚠️ <b>{html.escape(user.full_name)}</b>\n"
-        f"Правило: <b>{html.escape(RULE_NAMES.get(detection.rule_code, detection.rule_code))}</b>\n"
-        f"Причина: {html.escape(detection.reason)}\n"
-        f"Smart-score: <b>{detection.score}/100</b>\n"
-        f"Нарушение по этому правилу за 30 дней: <b>#{previous + 1}</b>\n"
-        f"Наказание: <b>{label}</b>",
-        parse_mode=ParseMode.HTML,
+        message.chat.id, user.id, f"iris_{action}", minutes, detection.rule_code
     )
 
 
@@ -323,9 +362,11 @@ async def warn_cmd(message: Message):
         message.reply_to_message.text or "",
         message.reply_to_message.message_id,
     )
-    await message.answer(
-        f"⚠️ {html.escape(user.full_name)} получил ручной варн.",
-        parse_mode=ParseMode.HTML,
+    await send_to_iris(
+        message.reply_to_message,
+        "warn",
+        0,
+        f"BRV SmartMod: ручной варн от {message.from_user.full_name}",
     )
 
 
@@ -346,13 +387,14 @@ async def mute_cmd(message: Message):
         minutes = max(1, min(int(parts[1]), 10080))
 
     user = message.reply_to_message.from_user
-    await mute(message.bot, message.chat.id, user.id, minutes)
-    await db.add_punishment(
-        message.chat.id, user.id, "mute", minutes, "MANUAL"
+    await send_to_iris(
+        message.reply_to_message,
+        "mute",
+        minutes,
+        f"BRV SmartMod: ручной мут от {message.from_user.full_name}",
     )
-    await message.answer(
-        f"🔇 {html.escape(user.full_name)} — мут {minutes} мин.",
-        parse_mode=ParseMode.HTML,
+    await db.add_punishment(
+        message.chat.id, user.id, "iris_mute", minutes, "MANUAL"
     )
 
 
@@ -366,13 +408,14 @@ async def ban_cmd(message: Message):
         return await message.answer("Ответь /ban на сообщение пользователя.")
 
     user = message.reply_to_message.from_user
-    await message.bot.ban_chat_member(message.chat.id, user.id)
-    await db.add_punishment(
-        message.chat.id, user.id, "ban", 0, "MANUAL"
+    await send_to_iris(
+        message.reply_to_message,
+        "ban",
+        0,
+        f"BRV SmartMod: ручной бан от {message.from_user.full_name}",
     )
-    await message.answer(
-        f"⛔ {html.escape(user.full_name)} забанен.",
-        parse_mode=ParseMode.HTML,
+    await db.add_punishment(
+        message.chat.id, user.id, "iris_ban", 0, "MANUAL"
     )
 
 

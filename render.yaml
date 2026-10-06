@@ -19,3 +19,7 @@ services:
         value: павлова,pavlova,@pav.p3
       - key: WEBHOOK_BASE_URL
         sync: false
+      - key: IRIS_BOT_USERNAME
+        value: iris_cm_bot
+      - key: IRIS_COMMAND_DELETE_SECONDS
+        value: "6"
