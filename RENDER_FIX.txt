@@ -1,0 +1,26 @@
+RENDER FIX
+
+Причина ошибки:
+Render для новых сервисов использует Python 3.14.x.
+Старая версия aiogram/pydantic-core из проекта пыталась собраться под Python 3.14
+и падала на metadata-generation-failed.
+
+Исправлено:
+- добавлен .python-version = 3.12.11
+- aiogram обновлён до 3.23.0
+
+Render:
+Build Command:
+pip install -r requirements.txt
+
+Start Command:
+python main.py
+
+Environment:
+BOT_TOKEN=...
+OWNER_ID=...
+BOT_NICKNAMES=сглыпа,sglypa,сглып
+PAVLOVA_NAMES=павлова,pavlova,@pav.p3
+
+Если репозиторий уже создан:
+просто загрузи .python-version и новый requirements.txt, затем Manual Deploy.
